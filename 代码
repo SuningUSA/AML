@@ -1,0 +1,98 @@
+//source change_spark_version spark-2.3.3.2
+//spark-shell --master yarn --executor-memory 16g --num-executors 100 --executor-cores 4 --driver-memory 16g 
+//  --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color" 
+//  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true 
+//  --conf spark.sql.broadcastTimeout=360000 
+//  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
+
+
+//反洗钱规则打捞分析
+
+import org.apache.spark.sql.types.{StringType, DoubleType, IntegerType, LongType}
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.rand
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import com.suning.usf.amlas.ap.AddressParser  
+import com.suning.usf.amlas.Parser.standardize
+
+
+//主表落库+是否失业信息+年龄
+//fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model表源后续存在停更可能，需申请fdm_dpa权限
+spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
+spark.sql("""
+create table usfinance.peng_20210805_aml_kyds_mainTB as
+select acct_no,id_card,user_age,rgst_time,member_id,if_unemploy
+from (select * from finance.mls_member_info_all where length(id_card) = 18)
+left join 
+(
+select id_num as id_card,1.0 as if_unemploy
+from fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model
+where length(id_num) = 18 and pb01ad04 = '70'
+)
+using (id_card)
+where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DATE(),100)
+""")
+
+//关联流水表
+spark.sql("select * from usfinance.peng_20210805_aml_kyds_mainTB").dropDuplicates("acct_no").join(
+spark.sql("""
+select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt from fdm_dpa.s022_snzf_t2a_trans_d 
+cross join (select max(stat_date) as latest_date from fdm_dpa.s022_snzf_t2a_trans_d)
+where stat_date >= DATE_SUB(CONCAT(SUBSTR(latest_date,1,4),'-',SUBSTR(latest_date,5,2),'-',SUBSTR(latest_date,7,2)),90)
+and length(ctac) > 19
+"""),Seq("acct_no"),"left"
+).write.mode("overwrite").saveAsTable("usfinance.peng_20210805_aml_kyds_withOMS")
+
+//关联商户信息
+spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_withvendor")
+spark.sql("""
+create table usfinance.peng_20210805_aml_kyds_withvendor as
+select *
+from usfinance.peng_20210805_aml_kyds_mainTB
+left join (select distinct acct_no,cmpy_no as vendor_cd from fbicsi.yc_taoxian04)
+using (acct_no)
+""")
+
+
+//近期全量交易信息OMS
+spark.sql("""
+select
+memb_id,vendor_cd,sbmt_time,pay_time,pay_tp_aray,gds_nm,statis_date,
+pay_amt,b2c_ord_id,b2c_ord_item_id,gds_cd,ord_dstr_tp_cd,sal_qty,bill_tp_cd
+from BROCK_DWD.T_ORD_RETAIL_GRP_ORD_DTL_D
+where statis_date > CONCAT(SUBSTR(DATE_SUB(CURRENT_DATE(),100),1,4),
+                          SUBSTR(DATE_SUB(CURRENT_DATE(),100),6,2),
+                          SUBSTR(DATE_SUB(CURRENT_DATE(),100),9,2))
+    and pay_time is not null
+""").withColumn("pay_name", regexp_extract($"pay_tp_aray", "pay_name\":(.*?),\"", 1)).drop("pay_tp_aray").
+write.mode("overwrite").saveAsTable("usfinance.peng_20210805_aml_kyds_withOMS")
+spark.sql("""
+select *,
+case 
+  when pay_name rlike '.*微信.*' then '微信'
+  when pay_name rlike '.*现金.*' then '现金'
+  when pay_name rlike '.*支付宝.*' then '支付宝'
+  when pay_name rlike '.*JLF.*' then '家乐福'
+  when pay_name rlike '.*家乐福.*' then '家乐福'
+  when pay_name rlike '.*银行.*' then '银行'
+  when pay_name rlike '.*苏宁.*' then '苏宁'
+  when pay_name rlike '.*易付宝.*' then '易付宝'
+  when pay_name rlike '.*银联.*' then '银联'
+  when pay_name rlike '.*任性付.*' then '任性付'
+  when pay_name rlike '.*促销.*' then '促销'  
+  when pay_name rlike '.*折扣.*' then '折扣'  
+  else 'other' end as pay_platform
+from
+usfinance.peng_20210805_aml_kyds_withOMS
+""").drop("pay_name").
+write.mode("overwrite").saveAsTable("usfinance.peng_20210805_aml_kyds_withOMS1")
+//把商户户头号和购买者户头号找出来
+spark.sql("select * from usfinance.peng_20210805_aml_kyds_withOMS1").join(
+  spark.sql("select distinct acct_no,vendor_cd from usfinance.peng_20210805_aml_kyds_withvendor where vendor_cd is not null"),
+  Seq("vendor_cd")
+).join(
+  spark.sql("""
+  select distinct acct_no as opp_acct,member_id as memb_id from usfinance.peng_20210805_aml_kyds_withvendor where member_id is not null
+  """),
+  Seq("memb_id")
+).write.mode("overwrite").saveAsTable("usfinance.peng_20210805_aml_kyds_withOMS2")
