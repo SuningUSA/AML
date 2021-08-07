@@ -46,6 +46,20 @@ and length(ctac) > 19
 """),Seq("acct_no"),"left"
 ).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_mainTB_withliushui")
 
+//KYDS-4: 交易笔数激增
+//3个月前开户且前推两个月交易笔数，是否除以本月交易笔数均小于20%；
+
+//KYDS-5: 交易金额激增
+//3个月前开户且前推两个月交易金额折RMB合计，是否除以本月交易金额折RMB合计均小于20%；
+
+//KYDS-6
+//休眠账户活动:3个月前开户且前推两个月交易笔数，是否除以本月交易笔数小于0.05；
+
+//KYDS-7
+//交易金额过大:本月交易金额折RMB合计是否大于200000元；
+//当月交易金额过大--- 折合人民币超过20万: 入账 + 出账 合计20万以上.
+
+
 //KYDS2-7
 spark.sql("""
 select 
@@ -91,6 +105,30 @@ withColumn("kyds7",when($"current_month_amt">200000 && $"current_month_amt"<5000
   when($"current_month_amt">=500000,10.0).otherwise(0.0))).
   select("acct_no","kyds2","kyds3","kyds4","kyds5","kyds6","kyds7").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_2_to_7")
+
+
+//KYDS-9:
+//过渡资金:本月借方交易金额合计除以本月贷方交易金额合计是否在0.95-1.05之间；
+//借方: $"rcv_pay"==="02", out
+//贷方: $"rcv_pay"==="01", in
+
+//KYDS-10:
+//分散转入集中转出:本月贷方交易笔数除以本月借方交易笔数是否大于3
+
+spark.sql("""
+select * from usfinance.aml_kyds_mainTB_withliushui
+where tr_tm>DATE_SUB(CURRENT_DATE(),30) and tr_tm<=DATE_SUB(CURRENT_DATE(),0)
+""").
+groupBy("acct_no").agg(
+  (count(when($"rcv_pay"==="01", 1.0)) / count(when($"rcv_pay"==="02", 1.0))).
+  alias("in_over_out_count"),
+  (sum(when($"rcv_pay"==="02", $"tr_amt").otherwise(0.0)) / (sum(when($"rcv_pay"==="01",$"tr_amt").otherwise(0.0)) + 0.000001)).
+  alias("out_over_in_amt")
+).
+withColumn("kyds9",when($"out_over_in_amt" > 0.95 && $"out_over_in_amt" < 1.05, 5.0).otherwise(0.0)).
+withColumn("kyds10",when($"in_over_out_count" > 3, 3.0).otherwise(0.0)).
+select("acct_no","kyds9","kyds10").
+write.mode("overwrite").saveAsTable("usfinance.aml_kyds_9_10")
 
 
 //kyds8和19
@@ -144,7 +182,9 @@ spark.sql("select * from usfinance.aml_kyds_withOMS1").join(
   """),
   Seq("memb_id")
 ).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_withOMS2")
-//本月交易对手大于30个
+
+
+//KYDS-8: 本月交易对手大于30个
 spark.sql("""
 select acct_no,count(distinct opp_acct) as unique_opp_cnt
 from usfinance.peng_20210805_aml_kyds_withOMS2
@@ -153,7 +193,8 @@ group by acct_no
 """).
 withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 100,10.0).otherwise(0.0)).select("acct_no","kyds8")
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_8")
-//贷方交易交易对手为除微信、支付宝外第三方、四方平台笔数占比超过50%，金额占比超过70%
+
+//KYDS-19: 贷方交易交易对手为除微信、支付宝外第三方、四方平台笔数占比超过50%，金额占比超过70%
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("select * from usfinance.aml_kyds_withOMS2").filter($"bill_tp_cd"==="1").groupBy("acct_no").agg(
   (avg(when($"pay_platform"==="other",1).otherwise(0.0))).
@@ -165,6 +206,8 @@ A = A.join(B,Seq("acct_no"),"left").withColumn("kyds19",when($"kyds19".isNull,0.
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_19")
 
 //kyds11
+//相同联系电话客户多: 相同联系电话客户大于3个同时小于10个
+//共用联系电话客户:
 spark.sql("select acct_no,mbl from usfinance.aml_kyds_mainTB").dropDuplicates("acct_no").join(
   spark.sql("select mbl,id_card from finance.mls_member_info_all").distinct(),Seq("mbl"),"left"
 ).groupBy("acct_no").agg(countDistinct("id_card").alias("shared_mbl_cnt")).
@@ -193,7 +236,9 @@ max($"sharedAddrAcctCount").as("maxsharedAddrAcctCount")
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_12")
 
 
-//kyds16
+//KYDS-16:小额测试:
+//当月前若干笔交易中是否含有交易金额为10元以下整数及0.1，0.2元
+//当月前若干笔交易金额: --- 同时包含出金和入金
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("""
 select *,
@@ -211,7 +256,8 @@ groupBy("acct_no").agg(
 ).withColumn("kyds16",when($"kyds16_1">0,$"kyds16_1").otherwise($"kyds16_2"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds16",when($"kyds16".isNull,0.0).otherwise($"kyds16"))
 
-//kyds18
+//kyds18:跨境转账
+//借方交易交易对手为境外账户笔数占比超过50%，金额占比超过70%
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("""
 select *,
@@ -228,7 +274,8 @@ otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_18")
 
 
-//kyds20
+//kyds20:折RMB整数跨境转入
+//贷方交易中存在境外转入交易金额折RMB为整数如5000，10000等，且笔数超过5笔或金额大于30000
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("""
 select *,
@@ -247,7 +294,8 @@ when(($"cross_int_cnt">5 && $"cross_int_cnt".isNotNull) || ($"cross_int_amt">500
 otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20")
 
-//kyds21
+//kyds21:交易IP异常
+//交易IP地址不在中国大陆境内
 //关联IP地址
 //我们以机器指纹表为例，取出pay_ip以演示与下面的ip归属地进行关联
 var mf = sql(""" 
@@ -283,7 +331,8 @@ spark.sql("select *,1.0 as oversea_ip from usfinance.aml_kyds_foreign_ip").join(
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_21")
 
 
-//kyds24
+//kyds24:交易时间异常
+//交易时间集中在深夜凌晨23：00-5：00的笔数占比30%
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("""
 select *,
