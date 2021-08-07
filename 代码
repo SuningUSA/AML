@@ -17,7 +17,7 @@ import com.suning.usf.amlas.Parser.standardize
 
 
 //主表落库+是否失业信息+年龄
-//fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model表源后续存在停更可能，需申请fdm_dpa权限
+//fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
 spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
 spark.sql("""
 create table usfinance.peng_20210805_aml_kyds_mainTB as
