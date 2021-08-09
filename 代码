@@ -5,7 +5,6 @@
 //  --conf spark.sql.broadcastTimeout=360000 
 //  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
 
-
 //反洗钱规则打捞分析
 
 import org.apache.spark.sql.types.{StringType, DoubleType, IntegerType, LongType}
