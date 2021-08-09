@@ -22,7 +22,7 @@ spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
 
 spark.sql("""
 create table usfinance.aml_kyds_mainTB as
-select acct_no,id_card,user_age,rgst_time,member_id,mbl,adrs,if_unemploy
+select acct_no,id_card,user_age,rgst_time,member_id,mbl,adrs,user_type,if_unemploy
 from (select * from finance.mls_member_info_all where length(id_card) = 18)
 left join 
 (
@@ -185,13 +185,16 @@ spark.sql("select * from usfinance.aml_kyds_withOMS1").join(
 
 
 //KYDS-8: 本月交易对手大于30个
+spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui").join(
 spark.sql("""
 select acct_no,count(distinct opp_acct) as unique_opp_cnt
 from usfinance.peng_20210805_aml_kyds_withOMS2
 where pay_time >= DATE_SUB(CURRENT_DATE(),35) --etl更新可能有延迟，留出5天缓冲
 group by acct_no
 """).
-withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 100,10.0).otherwise(0.0)).select("acct_no","kyds8")
+withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 100,10.0).otherwise(0.0)).select("acct_no","kyds8"),
+Seq("acct_no"),"left"
+).withColumn("kyds8",when($"kyds8".isNull,0.0).otherwise($"kyds8")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_8")
 
 //KYDS-19: 贷方交易交易对手为除微信、支付宝外第三方、四方平台笔数占比超过50%，金额占比超过70%
@@ -204,6 +207,23 @@ var B = spark.sql("select * from usfinance.aml_kyds_withOMS2").filter($"bill_tp_
 ).withColumn("kyds19",when($"non_famous_plat_ratio_cnt">0.5 && $"non_famous_plat_ratio_amt">0.7,10).otherwise(0.0))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds19",when($"kyds19".isNull,0.0).otherwise($"kyds19"))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_19")
+
+//本月借方交易金额合计除以本月贷方交易金额合计是否在0.95-1.05之间；
+var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
+var B = spark.sql("""select * from usfinance.aml_kyds_mainTB_withliushui
+where tr_tm > DATE_SUB(CURRENT_DATE(),30) and tr_tm <= DATE_SUB(CURRENT_DATE(),0)
+""").groupBy("acct_no").agg(
+  (count(when($"rcv_pay"==="01",1.0)) / count(when($"rcv_pay"==="02",1.0))).alias("in_over_out_count"),
+  (sum(when($"rcv_pay"==="02",$"tr_amt").otherwise(0.0)) / 
+  sum(when($"rcv_pay"==="01",$"tr_amt").otherwise(0.0))+0.000001).alias("out_over_in_amt")
+).withColumn("kyds9",when($"out_over_in_amt">0.95 && $"out_over_in_amt"<1.05,5.0).otherwise(0.0)).
+withColumn("kyds10",when($"in_over_out_count">3,3.0).otherwise(0.0))
+A = A.join(B,Seq("acct_no"),"left").select("acct_no","kyds9","kyds10").
+withColumn("kyds9",when($"kyds9".isNull,0.0).otherwise($"kyds9")).
+withColumn("kyds10",when($"kyds10".isNull,0.0).otherwise($"kyds10"))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_9_10")
+
+//本月贷方交易笔数除以本月借方交易笔数是否大于3；
 
 //kyds11
 //相同联系电话客户多: 相同联系电话客户大于3个同时小于10个
@@ -255,6 +275,7 @@ groupBy("acct_no").agg(
   max(when($"rn"<=10 && $"int_under_10">0,3.0).otherwise(0.0)).alias("kyds16_2")
 ).withColumn("kyds16",when($"kyds16_1">0,$"kyds16_1").otherwise($"kyds16_2"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds16",when($"kyds16".isNull,0.0).otherwise($"kyds16"))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_16")
 
 //kyds18:跨境转账
 //借方交易交易对手为境外账户笔数占比超过50%，金额占比超过70%
@@ -269,7 +290,7 @@ groupBy($"acct_no").agg(
   (sum($"is_cross"*$"tr_amt") / (sum($"tr_amt")+0.00001)).alias("cross_amt_ratio")
 )
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds18",
-when(($"cross_cnt_ratio">0.5 && $"cross_cnt_ratio".isNotNull) || ($"cross_amt_ratio">0.7 && $"cross_amt_ratio".isNotNull,15.0)).
+when(($"cross_cnt_ratio">0.5 && $"cross_cnt_ratio".isNotNull) || ($"cross_amt_ratio">0.7 && $"cross_amt_ratio".isNotNull),15.0).
 otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_18")
 
@@ -331,6 +352,34 @@ spark.sql("select *,1.0 as oversea_ip from usfinance.aml_kyds_foreign_ip").join(
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_21")
 
 
+//kyds22 借方交易对手疑似空壳公司
+//借方交易对公交易对手成立日期在三个月之内，且金额占比超过50%
+var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
+var B = spark.table("usfinance.aml_kyds_withOMS2").filter($"bill_tp_cd"==="1").join(
+  spark.sql("""
+  select acct_no,rgst_time from usfinance.aml_kyds_mainTB 
+  where user_type != 'PERSON' and rgst_time > DATE_SUB(CURRENT_DATE(),90)
+  """).dropDuplicates("acct_no").withColumn("is_recent",lit(1.0)),
+  Seq("acct_no"),"left"
+).groupBy("opp_acct").agg(
+  (sum(when($"is_recent".isNotNull,$"pay_amt").otherwise(0.0)) / (sum($"pay_amt")+0.00001)).alias("kyds22")
+).withColumn("kyds22",when($"kyds22">=0.5,20.0).otherwise(0.0)).withColumnRenamed("opp_acct","acct_no")
+A = A.join(B,Seq("acct_no"),"left").withColumn("kyds22",when($"kyds22".isNotNull,$"kyds22").otherwise(0.0))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_22")
+
+//kyds23:借方交易对公交易对手过渡资金
+//借方交易对公交易对手资金快进快出，当日清零
+//这里理解快进快出是（进+出）> 平均余额的10倍，且进出绝对差值小于平均余额的1%
+var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
+var B = spark.sql("select * from usfinance.aml_kyds_mainTB_withliushui").filter($"tr_tm".isNotNull && $"user_type"=!="PERSON").
+groupBy("acct_no").agg(
+  sum(when($"rcv_pay"==="01",$"tr_amt").otherwise(0.0)).alias("x1"),
+  sum(when($"rcv_pay"==="02",$"tr_amt").otherwise(0.0)).alias("x2"),
+  avg($"tr_bal_amt").alias("y")
+  ).filter(abs($"x1"-$"x2")<$"y"*0.01 && abs($"x1"+$"x2") > $"y"*100).select("acct_no").withColumn("kyds23",lit(20.0))
+A = A.join(B,Seq("acct_no"),"left").withColumn("kyds23",when($"kyds23".isNotNull,20.0).otherwise(0.0))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_23")
+
 //kyds24:交易时间异常
 //交易时间集中在深夜凌晨23：00-5：00的笔数占比30%
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
@@ -344,7 +393,8 @@ A = A.join(B,Seq("acct_no"),"left").withColumn("kyds24",when($"night_ratio">0.3 
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_24")
 
 
-//kyds25
+//kyds25:交易金额特殊
+//交易金额中10，100的倍数占比30%以上
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("select * from usfinance.aml_kyds_mainTB_withliushui").filter($"tr_amt".isNotNull).
 withColumn("is_int",when($"tr_amt" === $"tr_amt".cast("Int"),1).otherwise(0.0)).
@@ -353,3 +403,86 @@ withColumn("like_bet_amt",when($"is_int"===1 && $"res"===0,1.0).otherwise(0.0)).
 agg((avg($"like_bet_amt")).alias("like_bet_ratio"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds25",when($"like_bet_ratio">0.3,10.0).otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_25")
+
+
+spark.sql("""
+select acct_no,kyds2,kyds3,kyds4,kyds5,kyds6,kyds7,kyds8,kyds9,
+kyds10,kyds11,kyds12,kyds16,kyds18,kyds19,kyds20,kyds21,kyds22,kyds23,kyds24,kyds25
+from (select distinct acct_no from usfinance.aml_kyds_mainTB) 
+left join usfinance.aml_kyds_2_to_7
+using (acct_no)
+left join usfinance.aml_kyds_8
+using (acct_no)
+left join usfinance.aml_kyds_19
+using (acct_no)
+left join usfinance.aml_kyds_9_10
+using (acct_no)
+left join usfinance.aml_kyds_11
+using (acct_no)
+left join usfinance.aml_kyds_12
+using (acct_no)
+left join usfinance.aml_kyds_16
+using (acct_no)
+left join usfinance.aml_kyds_18
+using (acct_no)
+left join usfinance.aml_kyds_20
+using (acct_no)
+left join usfinance.aml_kyds_21
+using (acct_no)
+left join usfinance.aml_kyds_22
+using (acct_no)
+left join usfinance.aml_kyds_23
+using (acct_no)
+left join usfinance.aml_kyds_24
+using (acct_no)
+left join usfinance.aml_kyds_25
+using (acct_no)
+""").write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20210808")
+
+//跨境赌博
+spark.sql("""
+select * from
+(
+select *,
+kyds2+kyds3+kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
+kyds10+kyds11+kyds12+kyds16+kyds18+kyds19+kyds20+kyds21+kyds24+kyds25 as kjdb_score
+from usfinance.aml_kyds_20210808
+)
+order by kjdb_score desc 
+limit 30
+""").join(
+spark.sql("select acct_no, id_card,name,user_type from finance.mls_member_info_all").dropDuplicates("acct_no"),Seq("acct_no")).
+join(
+  spark.table("fbicsi.yc_taoxian06").select("cmpy_name", "id_card", "credit_no").distinct,Seq("id_card"),"left"
+).withColumn("name",when($"user_type"==="PERSON",$"name").otherwise($"cmpy_name")).
+withColumn("acct_no",concat(lit("户头号"),$"acct_no")).
+withColumn("id_card",concat(lit("身份证"),$"id_card")).
+withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
+select("acct_no","id_card","name","credit_no","kjdb_score","kyds2","kyds3","kyds4","kyds5",
+"kyds6","kyds7","kyds8","kyds9","kyds10","kyds11","kyds12","kyds16",
+"kyds18","kyds19","kyds20","kyds21","kyds24","kyds25").
+write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kjdb_cases")
+
+
+//地下钱庄
+spark.sql("""
+select * from
+(
+select *,
+kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
+kyds10+kyds22+kyds23 as kkgs_score
+from usfinance.aml_kyds_20210808
+)
+order by kkgs_score desc 
+limit 30
+""").join(
+spark.sql("select acct_no, id_card,name,user_type from finance.mls_member_info_all").dropDuplicates("acct_no"),Seq("acct_no")).
+join(
+  spark.table("fbicsi.yc_taoxian06").select("cmpy_name", "id_card", "credit_no").distinct,Seq("id_card"),"left"
+).withColumn("name",when($"user_type"==="PERSON",$"name").otherwise($"cmpy_name")).
+withColumn("acct_no",concat(lit("户头号"),$"acct_no")).
+withColumn("id_card",concat(lit("身份证"),$"id_card")).
+withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
+select("acct_no","id_card","name","credit_no","kkgs_score","kyds4","kyds5","kyds6","kyds7",
+"kyds8","kyds9","kyds10","kyds22","kyds23").
+write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kkgs_cases")
