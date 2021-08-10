@@ -45,6 +45,10 @@ and length(ctac) > 19
 """),Seq("acct_no"),"left"
 ).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_mainTB_withliushui")
 
+//KYDS-2:客户高低龄:客户年龄是否大于60岁或小于21岁
+
+//KYDS-3: 客户是否无业: 客户职业是否为无业、待业、离退休
+
 //KYDS-4: 交易笔数激增
 //3个月前开户且前推两个月交易笔数，是否除以本月交易笔数均小于20%；
 
