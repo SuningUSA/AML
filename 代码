@@ -118,20 +118,21 @@ write.mode("overwrite").saveAsTable("usfinance.aml_kyds_2_to_7")
 //KYDS-10:
 //分散转入集中转出:本月贷方交易笔数除以本月借方交易笔数是否大于3
 
-spark.sql("""
-select * from usfinance.aml_kyds_mainTB_withliushui
-where tr_tm>DATE_SUB(CURRENT_DATE(),30) and tr_tm<=DATE_SUB(CURRENT_DATE(),0)
-""").
-groupBy("acct_no").agg(
-  (count(when($"rcv_pay"==="01", 1.0)) / count(when($"rcv_pay"==="02", 1.0))).
-  alias("in_over_out_count"),
-  (sum(when($"rcv_pay"==="02", $"tr_amt").otherwise(0.0)) / (sum(when($"rcv_pay"==="01",$"tr_amt").otherwise(0.0)) + 0.000001)).
-  alias("out_over_in_amt")
-).
-withColumn("kyds9",when($"out_over_in_amt" > 0.95 && $"out_over_in_amt" < 1.05, 5.0).otherwise(0.0)).
-withColumn("kyds10",when($"in_over_out_count" > 3, 3.0).otherwise(0.0)).
-select("acct_no","kyds9","kyds10").
-write.mode("overwrite").saveAsTable("usfinance.aml_kyds_9_10")
+var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
+var B = spark.sql("""select * from usfinance.aml_kyds_mainTB_withliushui
+where tr_tm > DATE_SUB(CURRENT_DATE(),30) and tr_tm <= DATE_SUB(CURRENT_DATE(),0)
+""").groupBy("acct_no").agg(
+  (count(when($"rcv_pay"==="01",1.0)) / count(when($"rcv_pay"==="02",1.0))).alias("in_over_out_count"),
+  (sum(when($"rcv_pay"==="02",$"tr_amt").otherwise(0.0)) /
+  sum(when($"rcv_pay"==="01",$"tr_amt").otherwise(0.0))+0.000001).alias("out_over_in_amt")
+).withColumn("kyds9",when($"out_over_in_amt">0.95 && $"out_over_in_amt"<1.05,5.0).otherwise(0.0)).
+withColumn("kyds10",when($"in_over_out_count">3,3.0).otherwise(0.0))
+
+A = A.join(B,Seq("acct_no"),"left").select("acct_no","kyds9","kyds10").
+withColumn("kyds9",when($"kyds9".isNull,0.0).otherwise($"kyds9")).
+withColumn("kyds10",when($"kyds10".isNull,0.0).otherwise($"kyds10"))
+
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_9_10")
 
 
 //kyds8和19
