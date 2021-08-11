@@ -178,6 +178,8 @@ usfinance.aml_kyds_withOMS
 """).drop("pay_name").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_withOMS1")
 //把商户户头号和购买者户头号找出来
+//vendor_cd是卖家的编号
+//member_id是买家的编号
 spark.sql("select * from usfinance.aml_kyds_withOMS1").join(
   spark.sql("select distinct acct_no,vendor_cd from usfinance.aml_kyds_mainTBwithvendor where vendor_cd is not null"),
   Seq("vendor_cd")
