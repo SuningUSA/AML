@@ -366,7 +366,7 @@ groupBy("acct_no").agg(
   sum(when($"rcv_pay"==="02",$"tr_amt").otherwise(0.0)).alias("x2"),
   avg($"tr_bal_amt").alias("y")
   ).filter(abs($"x1"-$"x2")<$"y"*0.01 && abs($"x1"+$"x2") > $"y"*100).select("acct_no").withColumn("kyds23",lit(20.0))
-A = A.join(B,Seq("acct_no"),"left").withColumn("kyds23",when($"kyds23".isNotNull,20.0).otherwise(0.0))
+A = A.join(B,Seq("acct_no"),"left").withColumn("kyds23",when($"kyds23".isNotNull,15.0).otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_23")
 
 //kyds24:交易时间异常
