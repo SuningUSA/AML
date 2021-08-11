@@ -68,9 +68,9 @@ spark.sql("""
 select 
 *,
 case 
-when tr_tm>DATE_SUB(CURRENT_DATE(),90) and tr_tm<=DATE_SUB(CURRENT_DATE(),60) then '1'
-when tr_tm>DATE_SUB(CURRENT_DATE(),60) and tr_tm<=DATE_SUB(CURRENT_DATE(),30) then '2'
-when tr_tm>DATE_SUB(CURRENT_DATE(),30) and tr_tm<=DATE_SUB(CURRENT_DATE(),0) then '3'
+when tr_tm>DATE_SUB(latest_date,90) and tr_tm<=DATE_SUB(latest_date,60) then '1'
+when tr_tm>DATE_SUB(latest_date,60) and tr_tm<=DATE_SUB(latest_date,30) then '2'
+when tr_tm>DATE_SUB(latest_date,30) and tr_tm<=DATE_SUB(latest_date,0) then '3'
 end as month,
 if(rgst_time < DATE_SUB(CURRENT_DATE(),90),1,0) as is_over_90,
 case
