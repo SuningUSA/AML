@@ -193,6 +193,9 @@ spark.sql("select * from usfinance.aml_kyds_withOMS1").join(
 
 
 //KYDS-8: 本月交易对手大于30个
+//本月交易对手数量
+//30-50个，系数0.3得分3分；
+//50个以上，系数0.7得分7分；
 spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui").join(
 spark.sql("""
 select acct_no,count(distinct opp_acct) as unique_opp_cnt
@@ -200,7 +203,8 @@ from usfinance.peng_20210805_aml_kyds_withOMS2
 where pay_time >= DATE_SUB(CURRENT_DATE(),35) --etl更新可能有延迟，留出5天缓冲
 group by acct_no
 """).
-withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 100,10.0).otherwise(0.0)).select("acct_no","kyds8"),
+withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 50,3.0).otherwise(
+when($"unique_opp_cnt" >= 50, 7.0).otherwise(0.0))).select("acct_no","kyds8"),
 Seq("acct_no"),"left"
 ).withColumn("kyds8",when($"kyds8".isNull,0.0).otherwise($"kyds8")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_8")
@@ -532,11 +536,4 @@ withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
 select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds6","kyds7",
 "kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
-
-spark.table("usfinance.aml_kyds_dxqz_cases").
-coalesce(1).
-write.format("com.databricks.spark.csv").
-option("codec", "org.apache.hadoop.io.compress.GzipCodec").
-option("header", "true").csv("heqiao/dxqz0812.gzip")
-
 
