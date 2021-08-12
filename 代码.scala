@@ -533,6 +533,10 @@ select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds
 "kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
 
-
+spark.table("usfinance.aml_kyds_dxqz_cases").
+coalesce(1).
+write.format("com.databricks.spark.csv").
+option("codec", "org.apache.hadoop.io.compress.GzipCodec").
+option("header", "true").csv("heqiao/dxqz0812.gzip")
 
 
