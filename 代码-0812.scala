@@ -538,3 +538,4 @@ select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds
 "kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
 
+
