@@ -419,6 +419,7 @@ A = A.join(B, Seq("acct_no"), "left").withColumn("kyds26", when($"past3MAbnormal
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_26")
 
 //kyds27: 借方交易对手:
+//csifras.snzf_pub_cst_info2
 //名称含有“贸易”、“咨询”，“投资”；AND 注册资本小于10万元；AND 法人个人控股；AND 开户地址与企业注册地不同
 var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
 //使用城市
@@ -432,10 +433,10 @@ from
 from 
 (select *
 from 
-(select vendor_nm as cmpy_name, rgst_cptl from bi_sor.tsor_vendor_base_info_d) A1
+(select register_money, license_no as credit_no from csifras.snzf_pub_cst_info2) A1
 join
 (select cmpy_name, id_card, credit_no, cmpy_adrs, city_name from fbicsi.yc_taoxian06) A2
-using (cmpy_name)) A3
+using (credit_no)) A3
 join
 (select id_card, acct_no, adrs from finance.mls_member_info_all) A4
 using (id_card)
@@ -446,7 +447,7 @@ where tr_tm is not null) A6
 using (acct_no)
 """).
 withColumn("cityAcct", split(col("adrs"), "\\-").getItem(1).cast(StringType)).//开户城市
-filter($"rgst_cptl" < 10).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")).
+filter($"register_money" < 100000).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")).
 filter(! $"cmpy_adrs".contains("cityAcct")).select("acct_no").distinct.withColumn("kyds27Score", lit(1.0))
 A = A.join(B, Seq("acct_no"), "left").withColumn("kyds27", when($"kyds27Score" > 0, 5.0).otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_27")
