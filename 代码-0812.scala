@@ -1,9 +1,5 @@
 //source change_spark_version spark-2.3.3.2
-//spark-shell --master yarn --executor-memory 16g --num-executors 100 --executor-cores 4 --driver-memory 16g 
-//  --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color" 
-//  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true 
-//  --conf spark.sql.broadcastTimeout=360000 
-//  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
+//spark-shell --master yarn --executor-memory 16g --num-executors 40 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
 
 //反洗钱规则打捞分析
 
@@ -13,7 +9,7 @@ import org.apache.spark.sql.functions.rand
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import com.suning.usf.amlas.ap.AddressParser  
 import com.suning.usf.amlas.Parser.standardize
-spark.sqlContext.setConf("spark.sql.shuffle.partitions", "150")
+spark.sqlContext.setConf("spark.sql.shuffle.partitions", "170")
 
 //主表落库+是否失业信息+年龄
 //fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
@@ -38,11 +34,13 @@ where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DAT
 //关联流水表
 spark.sql("select * from usfinance.aml_kyds_mainTB").dropDuplicates("acct_no").join(
 spark.sql("""
-select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date, fund_use
-from fdm_dpa.s022_snzf_t2a_trans_d
-cross join (select max(stat_date) as latest_date from fdm_dpa.s022_snzf_t2a_trans_d)
-where stat_date >= DATE_SUB(CONCAT(SUBSTR(latest_date,1,4),'-',SUBSTR(latest_date,5,2),'-',SUBSTR(latest_date,7,2)),90)
-and length(ctac) > 19
+select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date, fund_use, latest_date
+from 
+(select * from fdm_dpa.s022_snzf_t2a_trans_d where tr_tm is not null) A1
+cross join 
+(select max(stat_date) as latest_date from fdm_dpa.s022_snzf_t2a_trans_d) A2
+where A1.stat_date >= DATE_SUB(CONCAT(SUBSTR(A2.latest_date,1,4),'-',SUBSTR(A2.latest_date,5,2),'-',SUBSTR(A2.latest_date,7,2)),90)
+and length(A1.ctac) > 19
 """),Seq("acct_no"),"left"
 ).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_mainTB_withliushui")
 
@@ -404,6 +402,7 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_25")
 //kyds26: 交易附言中含有“大张”（日元）、“小张”（美元）、“矮子”（日元）、
 //数字后面有“张”（万），“条”（10万），“粒”（百万）等字样:
 //此处指标计算方式为: 过去30天fund_use字段内含有大张/小张/矮子等的账户列表且数字后面含有
+spark.sql("""drop table if exists usfinance.aml_kyds_26""")
 var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui """)
 val B = spark.sql("""
 select fund_use, acct_no, tr_tm from usfinance.aml_kyds_mainTB_withliushui
@@ -421,6 +420,7 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_26")
 //kyds27: 借方交易对手:
 //csifras.snzf_pub_cst_info2
 //名称含有“贸易”、“咨询”，“投资”；AND 注册资本小于10万元；AND 法人个人控股；AND 开户地址与企业注册地不同
+spark.sql("""drop table if exists usfinance.aml_kyds_27""")
 var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
 //使用城市
 //问题: 1. 供应商信息表中的rgst_cptl字段 部分不准确
