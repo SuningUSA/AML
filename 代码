@@ -1,9 +1,5 @@
 //source change_spark_version spark-2.3.3.2
-//spark-shell --master yarn --executor-memory 16g --num-executors 100 --executor-cores 4 --driver-memory 16g 
-//  --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color" 
-//  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true 
-//  --conf spark.sql.broadcastTimeout=360000 
-//  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
+//spark-shell --master yarn --executor-memory 16g --num-executors 40 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar
 
 //反洗钱规则打捞分析
 
@@ -13,12 +9,13 @@ import org.apache.spark.sql.functions.rand
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import com.suning.usf.amlas.ap.AddressParser  
 import com.suning.usf.amlas.Parser.standardize
-
+spark.sqlContext.setConf("spark.sql.shuffle.partitions", "170")
 
 //主表落库+是否失业信息+年龄
 //fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
 spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
 
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
 spark.sql("""
 create table usfinance.aml_kyds_mainTB as
 select acct_no,id_card,user_age,rgst_time,member_id,mbl,adrs,user_type,if_unemploy
@@ -37,11 +34,13 @@ where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DAT
 //关联流水表
 spark.sql("select * from usfinance.aml_kyds_mainTB").dropDuplicates("acct_no").join(
 spark.sql("""
-select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date
-from fdm_dpa.s022_snzf_t2a_trans_d
-cross join (select max(stat_date) as latest_date from fdm_dpa.s022_snzf_t2a_trans_d)
-where stat_date >= DATE_SUB(CONCAT(SUBSTR(latest_date,1,4),'-',SUBSTR(latest_date,5,2),'-',SUBSTR(latest_date,7,2)),90)
-and length(ctac) > 19
+select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date, fund_use, latest_date
+from 
+(select * from fdm_dpa.s022_snzf_t2a_trans_d where tr_tm is not null) A1
+cross join 
+(select max(stat_date) as latest_date from fdm_dpa.s022_snzf_t2a_trans_d) A2
+where A1.stat_date >= DATE_SUB(CONCAT(SUBSTR(A2.latest_date,1,4),'-',SUBSTR(A2.latest_date,5,2),'-',SUBSTR(A2.latest_date,7,2)),90)
+and length(A1.ctac) > 19
 """),Seq("acct_no"),"left"
 ).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_mainTB_withliushui")
 
@@ -192,6 +191,9 @@ spark.sql("select * from usfinance.aml_kyds_withOMS1").join(
 
 
 //KYDS-8: 本月交易对手大于30个
+//本月交易对手数量
+//30-50个，系数0.3得分3分；
+//50个以上，系数0.7得分7分；
 spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui").join(
 spark.sql("""
 select acct_no,count(distinct opp_acct) as unique_opp_cnt
@@ -199,7 +201,8 @@ from usfinance.peng_20210805_aml_kyds_withOMS2
 where pay_time >= DATE_SUB(CURRENT_DATE(),35) --etl更新可能有延迟，留出5天缓冲
 group by acct_no
 """).
-withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 100,10.0).otherwise(0.0)).select("acct_no","kyds8"),
+withColumn("kyds8",when($"unique_opp_cnt">30 && $"unique_opp_cnt" < 50,3.0).otherwise(
+when($"unique_opp_cnt" >= 50, 7.0).otherwise(0.0))).select("acct_no","kyds8"),
 Seq("acct_no"),"left"
 ).withColumn("kyds8",when($"kyds8".isNull,0.0).otherwise($"kyds8")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_8")
@@ -395,10 +398,64 @@ agg((avg($"like_bet_amt")).alias("like_bet_ratio"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds25",when($"like_bet_ratio">0.3,10.0).otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_25")
 
+//Heqiao-0812-
+//kyds26: 交易附言中含有“大张”（日元）、“小张”（美元）、“矮子”（日元）、
+//数字后面有“张”（万），“条”（10万），“粒”（百万）等字样:
+//此处指标计算方式为: 过去30天fund_use字段内含有大张/小张/矮子等的账户列表且数字后面含有
+spark.sql("""drop table if exists usfinance.aml_kyds_26""")
+var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui """)
+val B = spark.sql("""
+select fund_use, acct_no, tr_tm from usfinance.aml_kyds_mainTB_withliushui
+where fund_use rlike '.*[0-9]+条.*' or fund_use rlike '.*[0-9]+粒'
+or fund_use rlike '.*[0-9]+张.*' or fund_use rlike '大张' or fund_use rlike '小张'
+or fund_use rlike '矮子'
+""").
+filter($"tr_tm".isNotNull).
+groupBy("acct_no").agg(
+count($"fund_use").as("past3MAbnormalNotesCount")
+)
+A = A.join(B, Seq("acct_no"), "left").withColumn("kyds26", when($"past3MAbnormalNotesCount" > 0.0, 15.0).otherwise(0.0))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_26")
+
+//kyds27: 借方交易对手:
+//csifras.snzf_pub_cst_info2
+//名称含有“贸易”、“咨询”，“投资”；AND 注册资本小于10万元；AND 法人个人控股；AND 开户地址与企业注册地不同
+spark.sql("""drop table if exists usfinance.aml_kyds_27""")
+var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
+//使用城市
+//问题: 1. 供应商信息表中的rgst_cptl字段 部分不准确
+//2. 法人个人控股这一点 从现有数据源中暂时无法获取 故暂不纳入
+//3. 开户地址部分不规范（不是标准化格式地址）故模糊处理。
+val B = spark.sql("""
+select *
+from
+(select *
+from 
+(select *
+from 
+(select register_money, license_no as credit_no from csifras.snzf_pub_cst_info2) A1
+join
+(select cmpy_name, id_card, credit_no, cmpy_adrs, city_name from fbicsi.yc_taoxian06) A2
+using (credit_no)) A3
+join
+(select id_card, acct_no, adrs from finance.mls_member_info_all) A4
+using (id_card)
+) A5
+join 
+(select distinct acct_no, tr_tm from usfinance.aml_kyds_mainTB_withliushui
+where tr_tm is not null) A6 
+using (acct_no)
+""").
+withColumn("cityAcct", split(col("adrs"), "\\-").getItem(1).cast(StringType)).//开户城市
+filter($"register_money" < 100000).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")).
+filter(! $"cmpy_adrs".contains("cityAcct")).select("acct_no").distinct.withColumn("kyds27Score", lit(1.0))
+A = A.join(B, Seq("acct_no"), "left").withColumn("kyds27", when($"kyds27Score" > 0, 5.0).otherwise(0.0))
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_27")
 
 spark.sql("""
 select acct_no,kyds2,kyds3,kyds4,kyds5,kyds6,kyds7,kyds8,kyds9,
-kyds10,kyds11,kyds12,kyds16,kyds18,kyds19,kyds20,kyds21,kyds22,kyds23,kyds24,kyds25
+kyds10,kyds11,kyds12,kyds16,kyds18,kyds19,kyds20,kyds21,kyds22,kyds23,kyds24,kyds25,
+kyds26,kyds27
 from (select distinct acct_no from usfinance.aml_kyds_mainTB) 
 left join usfinance.aml_kyds_2_to_7
 using (acct_no)
@@ -428,6 +485,10 @@ left join usfinance.aml_kyds_24
 using (acct_no)
 left join usfinance.aml_kyds_25
 using (acct_no)
+left join usfinance.aml_kyds_26
+using (acct_no)
+left join usfinance.aml_kyds_27
+using (acct_no)
 """).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20210808")
 
 //跨境赌博
@@ -454,17 +515,16 @@ select("acct_no","id_card","name","credit_no","kjdb_score","kyds2","kyds3","kyds
 "kyds18","kyds19","kyds20","kyds21","kyds24","kyds25").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kjdb_cases")
 
-
-//地下钱庄
+//地下钱庄Heqiao-0812
 spark.sql("""
-select * from
+select * from 
 (
-select *,
-kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
-kyds10+kyds22+kyds23 as kkgs_score
+  select *,
+  kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
+kyds10+kyds22+kyds23+kyds26+kyds27 as dxqz_score
 from usfinance.aml_kyds_20210808
 )
-order by kkgs_score desc 
+order by dxqz_score desc
 limit 30
 """).join(
 spark.sql("select acct_no, id_card,name,user_type from finance.mls_member_info_all").dropDuplicates("acct_no"),Seq("acct_no")).
@@ -474,6 +534,6 @@ join(
 withColumn("acct_no",concat(lit("户头号"),$"acct_no")).
 withColumn("id_card",concat(lit("身份证"),$"id_card")).
 withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
-select("acct_no","id_card","name","credit_no","kkgs_score","kyds4","kyds5","kyds6","kyds7",
-"kyds8","kyds9","kyds10","kyds22","kyds23").
-write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kkgs_cases")
+select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds6","kyds7",
+"kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27").
+write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
