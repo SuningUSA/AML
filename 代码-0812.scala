@@ -420,7 +420,7 @@ var B = spark.sql("select * from usfinance.aml_kyds_mainTB_withliushui").filter(
 //withColumn("res",when($"tr_amt">100,$"tr_amt".cast("Int") % 100).otherwise($"tr_amt".cast("Int") % 10)).
 //withColumn("like_bet_amt",when($"is_int"===1 && $"res"===0,1.0).otherwise(0.0)).groupBy($"acct_no").
 //agg((avg($"like_bet_amt")).alias("like_bet_ratio"))
-withColumn("isAbnormalAmnt", when($"tr_amt" % 100 === 0 && $"tr_amt" < 20000, 1.0).otherwise(0.0)).
+withColumn("isAbnormalAmnt", when($"tr_amt" > 0.0 && $"tr_amt" % 100 === 0 && $"tr_amt" < 20000, 1.0).otherwise(0.0)).
 groupBy("acct_no").
 agg((avg($"isAbnormalAmnt")).as("like_bet_ratio"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds25",when($"like_bet_ratio">0.3,10.0).otherwise(0.0))
@@ -483,7 +483,7 @@ withColumn("cityAcct", split(col("adrs"), "\\-").getItem(1).cast(StringType)).//
 withColumn("kyds27", when($"city_name" =!= $"city_name_id_card" &&
   ! $"cmpy_adrs".contains($"cityAcct"), 5.0).otherwise(0.0)).
 withColumn("kyds29", when($"cmpy_adrs".contains("小区") && ($"cmpy_adrs".contains("单元") || $"cmpy_adrs".contains("号楼")) && ! $"cmpy_adrs".contains("商网"), 5.0).otherwise(0.0)).//kyds29
-withColumn("kyds30", when(lit(2021.0) - substring($"id_card", 7, 4).cast(DoubleType) <= 23 && 
+withColumn("kyds30", when(lit(2021.0) - substring($"id_card", 7, 4).cast(DoubleType) < 23 && 
 lit(2021.0) - substring($"id_card", 7, 4).cast(DoubleType) > 0, 5.0).otherwise(0.0))//kyds30
 //filter($"register_money" < 100000).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")). 原有逻辑，现有变更。
 //filter(! $"cmpy_adrs".contains("cityAcct")).select("acct_no").distinct.withColumn("kyds27Score", lit(1.0))
@@ -510,7 +510,6 @@ count(when($"tr_tm".isNotNull, 1.0)).as("creditCardOppoTrCount")
 ).withColumn("kyds28", when($"creditCardOppoTrCount" > 10, 10.0).otherwise(0.0))
 A = A.join(B, Seq("acct_no"), "left")
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_28")
-
 
 spark.sql("""
 select acct_no,kyds2,kyds3,kyds4,kyds5,kyds6,kyds7,kyds8,kyds9,
