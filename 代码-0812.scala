@@ -1,6 +1,6 @@
 //source change_spark_version spark-2.3.3.2
 //spark-shell --master yarn --executor-memory 16g --num-executors 30 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
-
+//
 //反洗钱规则打捞分析
 
 import org.apache.spark.sql.types.{StringType, DoubleType, IntegerType, LongType}
