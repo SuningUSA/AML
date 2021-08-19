@@ -1,5 +1,5 @@
 //source change_spark_version spark-2.3.3.2
-//spark-shell --master yarn --executor-memory 16g --num-executors 40 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
+//spark-shell --master yarn --executor-memory 16g --num-executors 30 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
 
 //反洗钱规则打捞分析
 
@@ -7,9 +7,10 @@ import org.apache.spark.sql.types.{StringType, DoubleType, IntegerType, LongType
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.rand
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions.{array_contains,col}
 import com.suning.usf.amlas.ap.AddressParser  
 import com.suning.usf.amlas.Parser.standardize
-spark.sqlContext.setConf("spark.sql.shuffle.partitions", "170")
+spark.sqlContext.setConf("spark.sql.shuffle.partitions", "160")
 
 //主表落库+是否失业信息+年龄
 //fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
@@ -32,9 +33,10 @@ where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DAT
 """)
 
 //关联流水表
+//08-19: 加入客户编号字段
 spark.sql("select * from usfinance.aml_kyds_mainTB").dropDuplicates("acct_no").join(
 spark.sql("""
-select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date, fund_use, latest_date
+select substr(ctac,1,19) as acct_no,tr_tm,tr_amt,rcv_pay,tr_bal_amt,tr_cny_amt,cross_flag,stat_date, fund_use, cust_id, opp_cust_id, latest_date
 from 
 (select * from fdm_dpa.s022_snzf_t2a_trans_d where tr_tm is not null) A1
 cross join 
@@ -63,6 +65,13 @@ and length(A1.ctac) > 19
 
 
 //KYDS2-7
+
+//将所有账户和账户类型进行存储
+spark.sql("""
+select acct_no, user_type from finance.mls_member_info_all where length(id_card) = 18
+""").write.mode("overwrite").saveAsTable("usfinance.heqiao_210819_acctType_tmp")
+
+//08-19 --- 修改kyds-7
 spark.sql("""
 select 
 *,
@@ -103,12 +112,26 @@ groupBy("acct_no","month").agg(
 withColumn("kyds4",when($"first_over_now_cnt"<0.2 && $"second_over_now_cnt"<0.2 && $"is_over_90">0,5.0).otherwise(0.0)).
 withColumn("kyds5",when($"first_over_now_amt"<0.2 && $"second_over_now_amt"<0.2 && $"is_over_90">0,5.0).otherwise(0.0)).
 withColumn("kyds6",when($"first_over_now_cnt">20 && $"second_over_now_cnt">20 && $"is_over_90">0,5.0).otherwise(0.0)).
-withColumn("kyds7",when($"current_month_amt">200000 && $"current_month_amt"<500000,7.0).otherwise(
-  when($"current_month_amt">=500000,10.0).otherwise(0.0))).
-  select("acct_no","kyds2","kyds3","kyds4","kyds5","kyds6","kyds7").
+join(spark.table("usfinance.heqiao_210819_acctType_tmp"), Seq("acct_no")).
+  select("acct_no","kyds2","kyds3","kyds4","kyds5","kyds6", "current_month_amt", "user_type").
+write.mode("overwrite").saveAsTable("usfinance.aml_kyds_2to6_V1")
+
+//kyds-7 修改分析:
+val kyds7_P1 = spark.table("usfinance.aml_kyds_2to6_V1").
+filter($"user_type" === "CORPORAT").
+withColumn("kyds7", when($"current_month_amt" < 100000, -(10.0)).
+otherwise(when($"current_month_amt" <= 500000 && $"current_month_amt" > 200000, 7.0).
+otherwise(when($"current_month_amt" >= 500000, 10.0).otherwise(0.0))))
+
+val kyds7_P2 = spark.table("usfinance.aml_kyds_2to6_V1").
+filter($"user_type" === "PERSON").
+withColumn("kyds7", when($"current_month_amt" < 20000, -(10.0)).
+otherwise(when($"current_month_amt" <= 100000 && $"current_month_amt" > 50000, 7.0).
+otherwise(when($"current_month_amt" >= 100000, 10.0).otherwise(0.0))))
+
+kyds7_P1.union(kyds7_P2).
+select("acct_no", "kyds2", "kyds3", "kyds4", "kyds5", "kyds6", "kyds7").distinct.
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_2_to_7")
-
-
 //KYDS-9:
 //过渡资金:本月借方交易金额合计除以本月贷方交易金额合计是否在0.95-1.05之间；
 //借方: $"rcv_pay"==="02", out
@@ -338,13 +361,13 @@ join(ip_location, mf_ip.col("ip1") === ip_location.col("start_ip1") &&
 mf_ip.col("ip2") === ip_location.col("start_ip2") &&
 mf_ip.col("ip3") >= ip_location.col("start_ip3") &&
 mf_ip.col("ip3") <= ip_location.col("end_ip3")).
-filter($"ip_country" =!= "中国").select("acct_no","stat_date").distinct().
+filter($"ip_country".contains("菲律宾") || $"ip_country".contains("韩国") || $"ip_country".contains("澳门") || $"ip_country".contains("日本") || $"ip_country".contains("香港") || $"ip_country".contains("泰国") || $"ip_country".contains("缅甸") || $"ip_country".contains("新加坡")).
+select("acct_no","stat_date").distinct().
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_foreign_ip")
-spark.sql("select *,1.0 as oversea_ip from usfinance.aml_kyds_foreign_ip").join(
+spark.sql("select *,1.0 as abnormalPlaceIP from usfinance.aml_kyds_foreign_ip").join(
   spark.sql("select * from usfinance.aml_kyds_mainTB_withliushui"),Seq("acct_no","stat_date"),"right"
-).groupBy("acct_no").agg(max(when($"oversea_ip".isNotNull,15.0).otherwise(0.0)).alias("kyds21")).
+).groupBy("acct_no").agg(max(when($"abnormalPlaceIP".isNotNull,15.0).otherwise(0.0)).alias("kyds21")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_21")
-
 
 //kyds22 借方交易对手疑似空壳公司
 //借方交易对公交易对手成立日期在三个月之内，且金额占比超过50%
@@ -389,14 +412,20 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_24")
 
 //kyds25:交易金额特殊
 //交易金额中10，100的倍数占比30%以上
+//新逻辑 -- 交易金额为100的倍数，且金额小于20000占比30%以上
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
 var B = spark.sql("select * from usfinance.aml_kyds_mainTB_withliushui").filter($"tr_amt".isNotNull).
-withColumn("is_int",when($"tr_amt" === $"tr_amt".cast("Int"),1).otherwise(0.0)).
-withColumn("res",when($"tr_amt">100,$"tr_amt".cast("Int") % 100).otherwise($"tr_amt".cast("Int") % 10)).
-withColumn("like_bet_amt",when($"is_int"===1 && $"res"===0,1.0).otherwise(0.0)).groupBy($"acct_no").
-agg((avg($"like_bet_amt")).alias("like_bet_ratio"))
+//更新逻辑:
+//withColumn("is_int",when($"tr_amt" === $"tr_amt".cast("Int"),1).otherwise(0.0)).
+//withColumn("res",when($"tr_amt">100,$"tr_amt".cast("Int") % 100).otherwise($"tr_amt".cast("Int") % 10)).
+//withColumn("like_bet_amt",when($"is_int"===1 && $"res"===0,1.0).otherwise(0.0)).groupBy($"acct_no").
+//agg((avg($"like_bet_amt")).alias("like_bet_ratio"))
+withColumn("isAbnormalAmnt", when($"tr_amt" % 100 === 0 && $"tr_amt" < 20000, 1.0).otherwise(0.0)).
+groupBy("acct_no").
+agg((avg($"isAbnormalAmnt")).as("like_bet_ratio"))
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds25",when($"like_bet_ratio">0.3,10.0).otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_25")
+
 
 //Heqiao-0812-
 //kyds26: 交易附言中含有“大张”（日元）、“小张”（美元）、“矮子”（日元）、
@@ -420,12 +449,15 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_26")
 //kyds27: 借方交易对手:
 //csifras.snzf_pub_cst_info2
 //名称含有“贸易”、“咨询”，“投资”；AND 注册资本小于10万元；AND 法人个人控股；AND 开户地址与企业注册地不同
-spark.sql("""drop table if exists usfinance.aml_kyds_27""")
+spark.sql("""drop table if exists usfinance.aml_kyds_27_29_30""")
 var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
+val A1 = spark.sql("""select district_first_6, city_name as city_name_id_card from usfinance.id_card_district_name_hash_RuanHeqiao_20200708 """)
 //使用城市
 //问题: 1. 供应商信息表中的rgst_cptl字段 部分不准确
 //2. 法人个人控股这一点 从现有数据源中暂时无法获取 故暂不纳入
 //3. 开户地址部分不规范（不是标准化格式地址）故模糊处理。
+
+//kyds27: 0819修改逻辑
 val B = spark.sql("""
 select *
 from
@@ -446,16 +478,45 @@ join
 where tr_tm is not null) A6 
 using (acct_no)
 """).
+withColumn("district_first_6", substring($"id_card", 1, 6)).
+join(A1, Seq("district_first_6")).
 withColumn("cityAcct", split(col("adrs"), "\\-").getItem(1).cast(StringType)).//开户城市
-filter($"register_money" < 100000).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")).
-filter(! $"cmpy_adrs".contains("cityAcct")).select("acct_no").distinct.withColumn("kyds27Score", lit(1.0))
-A = A.join(B, Seq("acct_no"), "left").withColumn("kyds27", when($"kyds27Score" > 0, 5.0).otherwise(0.0))
-A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_27")
+withColumn("kyds27", when($"city_name" =!= $"city_name_id_card" &&
+  ! $"cmpy_adrs".contains($"cityAcct"), 5.0).otherwise(0.0)).
+withColumn("kyds29", when($"cmpy_adrs".contains("小区") && ($"cmpy_adrs".contains("单元") || $"cmpy_adrs".contains("号楼")) && ! $"cmpy_adrs".contains("商网"), 5.0).otherwise(0.0)).//kyds29
+withColumn("kyds30", when(lit(2021.0) - substring($"id_card", 7, 4).cast(DoubleType) <= 23 && 
+lit(2021.0) - substring($"id_card", 7, 4).cast(DoubleType) > 0, 5.0).otherwise(0.0))//kyds30
+//filter($"register_money" < 100000).filter($"cmpy_name".contains("贸易") || $"cmpy_name".contains("咨询") || $"cmpy_name".contains("投资")). 原有逻辑，现有变更。
+//filter(! $"cmpy_adrs".contains("cityAcct")).select("acct_no").distinct.withColumn("kyds27Score", lit(1.0))
+A = A.join(B, Seq("acct_no"), "left")
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_27_29_30")
+
+//kyds28: 借方交易账号为他人信用卡:
+//借方交易对手为他人信用卡，且笔数超过10笔(限制在过去3个月)
+//由于该表过大(10000分区)且每日更新全量数据,我们取3天之前的stat_date进行分析
+val cur_dat = java.time.LocalDate.now 
+val current_date = cur_dat.minusDays(2).toString
+val past3d = cur_dat.minusDays(3).toString
+val past3dStatDate = past3d.substring(0, 4) + past3d.substring(5, 7) + past3d.substring(8, 10)
+var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
+//"120013"默认信用卡交易
+val A1 = spark.table("fdm_dpa.s022_snzf_t2a_dpst_acct_i_d").filter($"stat_date" === past3dStatDate).
+filter($"card_style" === "120013")
+val A2 = spark.table("usfinance.aml_kyds_mainTB_withliushui").
+select("acct_no", "opp_cust_id", "tr_tm", "tr_amt", "rcv_pay").distinct.
+withColumnRenamed("opp_cust_id", "cust_id")
+val B = A1.join(A2, Seq("cust_id")).
+groupBy("acct_no").agg(
+count(when($"tr_tm".isNotNull, 1.0)).as("creditCardOppoTrCount")
+).withColumn("kyds28", when($"creditCardOppoTrCount" > 10, 10.0).otherwise(0.0))
+A = A.join(B, Seq("acct_no"), "left")
+A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_28")
+
 
 spark.sql("""
 select acct_no,kyds2,kyds3,kyds4,kyds5,kyds6,kyds7,kyds8,kyds9,
 kyds10,kyds11,kyds12,kyds16,kyds18,kyds19,kyds20,kyds21,kyds22,kyds23,kyds24,kyds25,
-kyds26,kyds27
+kyds26,kyds27,kyds28,kyds29,kyds30
 from (select distinct acct_no from usfinance.aml_kyds_mainTB) 
 left join usfinance.aml_kyds_2_to_7
 using (acct_no)
@@ -487,7 +548,9 @@ left join usfinance.aml_kyds_25
 using (acct_no)
 left join usfinance.aml_kyds_26
 using (acct_no)
-left join usfinance.aml_kyds_27
+left join usfinance.aml_kyds_28
+using (acct_no)
+left join usfinance.aml_kyds_27_29_30
 using (acct_no)
 """).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20210808")
 
