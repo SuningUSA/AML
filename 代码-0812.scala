@@ -427,7 +427,6 @@ A = A.join(B,Seq("acct_no"),"left").withColumn("kyds25",when($"like_bet_ratio">0
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_25")
 
 
-//Heqiao-0812-
 //kyds26: 交易附言中含有“大张”（日元）、“小张”（美元）、“矮子”（日元）、
 //数字后面有“张”（万），“条”（10万），“粒”（百万）等字样:
 //此处指标计算方式为: 过去30天fund_use字段内含有大张/小张/矮子等的账户列表且数字后面含有
@@ -555,18 +554,20 @@ using (acct_no)
 """).write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20210808")
 
 //跨境赌博
+spark.sql("""drop table if exists usfinance.aml_kyds_kjdb_cases""")
 spark.sql("""
 select * from
 (
 select *,
 kyds2+kyds3+kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
-kyds10+kyds11+kyds12+kyds16+kyds18+kyds19+kyds20+kyds21+kyds24+kyds25 as kjdb_score
+kyds10+kyds11+kyds12+kyds16+kyds18+kyds19+kyds20+kyds21+kyds24+kyds25+kyds28 as kjdb_score
 from usfinance.aml_kyds_20210808
 )
 order by kjdb_score desc 
 limit 30
 """).join(
 spark.sql("select acct_no, id_card,name,user_type from finance.mls_member_info_all").dropDuplicates("acct_no"),Seq("acct_no")).
+filter($"user_type" === "PERSON").
 join(
   spark.table("fbicsi.yc_taoxian06").select("cmpy_name", "id_card", "credit_no").distinct,Seq("id_card"),"left"
 ).withColumn("name",when($"user_type"==="PERSON",$"name").otherwise($"cmpy_name")).
@@ -575,7 +576,7 @@ withColumn("id_card",concat(lit("身份证"),$"id_card")).
 withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
 select("acct_no","id_card","name","credit_no","kjdb_score","kyds2","kyds3","kyds4","kyds5",
 "kyds6","kyds7","kyds8","kyds9","kyds10","kyds11","kyds12","kyds16",
-"kyds18","kyds19","kyds20","kyds21","kyds24","kyds25").
+"kyds18","kyds19","kyds20","kyds21","kyds24","kyds25","kyds28").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kjdb_cases")
 
 //地下钱庄Heqiao-0812
@@ -584,7 +585,7 @@ select * from
 (
   select *,
   kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
-kyds10+kyds22+kyds23+kyds26+kyds27 as dxqz_score
+kyds10+kyds22+kyds23+kyds26+kyds27+kyds29+kyds30 as dxqz_score
 from usfinance.aml_kyds_20210808
 )
 order by dxqz_score desc
@@ -598,5 +599,5 @@ withColumn("acct_no",concat(lit("户头号"),$"acct_no")).
 withColumn("id_card",concat(lit("身份证"),$"id_card")).
 withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
 select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds6","kyds7",
-"kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27").
+"kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27","kyds29","kyds30").
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
