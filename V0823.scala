@@ -76,9 +76,9 @@ spark.sql("""
 select 
 *,
 case 
-when tr_tm>'2021-05-21' and tr_tm<='2021-06-21' then '1'
-when tr_tm>'2021-06-21' and tr_tm<='2021-07-21' then '2'
-when tr_tm>'2021-07-21' and tr_tm<='2021-08-21' then '3'
+when tr_tm > DATE_SUB(CURRENT_DATE(), 93) and tr_tm <= DATE_SUB(CURRENT_DATE(), 62) then '1'
+when tr_tm > DATE_SUB(CURRENT_DATE(), 62) and tr_tm <= DATE_SUB(CURRENT_DATE(), 31) then '2'
+when tr_tm > DATE_SUB(CURRENT_DATE(), 31) and tr_tm <= CURRENT_DATE() then '3'
 end as month,
 if(rgst_time < DATE_SUB(CURRENT_DATE(),90),1,0) as is_over_90,
 case
@@ -133,7 +133,8 @@ otherwise(when($"current_month_amt" <= 100000 && $"current_month_amt" > 50000, 3
 otherwise(when($"current_month_amt" >= 100000, 10.0).otherwise(0.0))))
 
 kyds7_P1.union(kyds7_P2).
-select("acct_no", "kyds2", "kyds3", "kyds4", "kyds5", "kyds6", "kyds7").distinct.
+select("acct_no", "kyds2", "kyds3", "kyds4", "kyds5", "kyds6", 
+  "kyds7", "acctPast3mTransactionCount", "acctPast3mTransactionAmnt").distinct.
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_2_to_7")
 
 //KYDS-9:
@@ -496,13 +497,14 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_27_29_30")
 //kyds28: 借方交易账号为他人信用卡:
 //借方交易对手为他人信用卡，且笔数超过10笔(限制在过去3个月)
 //由于该表过大(10000分区)且每日更新全量数据,我们取3天之前的stat_date进行分析
+spark.sql("""drop table if exists usfinance.aml_kyds_28""")
 val cur_dat = java.time.LocalDate.now 
 val current_date = cur_dat.minusDays(2).toString
 val past3d = cur_dat.minusDays(3).toString
 val past3dStatDate = past3d.substring(0, 4) + past3d.substring(5, 7) + past3d.substring(8, 10)
 var A = spark.sql("""select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui""")
 //"120016"默认信用卡交易
-val A1 = spark.table("fdm_dpa.s022_snzf_t2a_dpst_acct_i_d").filter($"stat_date" === past3dStatDate).
+val A1 = spark.table("fdm_dpa.s022_snzf_t2a_dpst_acct_i_d").filter($"stat_date" >= past3dStatDate).
 filter($"card_style" === "120016")
 val A2 = spark.table("usfinance.aml_kyds_mainTB_withliushui").
 select("acct_no", "opp_cust_id", "tr_tm", "tr_amt", "rcv_pay").distinct.
@@ -518,7 +520,7 @@ A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_28")
 spark.sql("""
 select acct_no,kyds2,kyds3,kyds4,kyds5,kyds6,kyds7,kyds8,kyds9,
 kyds10,kyds11,kyds12,kyds16,kyds18,kyds19,kyds20,kyds21,kyds22,kyds23,kyds24,kyds25,
-kyds26,kyds27,kyds28,kyds29,kyds30
+kyds26,kyds27,kyds28,kyds29,kyds30, acctPast3mTransactionAmnt, acctPast3mTransactionCount
 from (select distinct acct_no from usfinance.aml_kyds_mainTB) 
 left join usfinance.aml_kyds_2_to_7
 using (acct_no)
@@ -557,6 +559,8 @@ using (acct_no)
 """).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_20210808")
 
+//计算交易时间范围:
+
 //跨境赌博
 //个人客户 ---- 
 spark.sql("""drop table if exists usfinance.aml_kyds_kjdb_cases""")
@@ -565,7 +569,8 @@ select distinct * from
 (
 select *,
 kyds2+kyds3+kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
-kyds10+kyds11+kyds12+kyds16+kyds18+kyds19+kyds20+kyds21+kyds24+kyds25+kyds28 as kjdb_score
+kyds10+kyds11+kyds12+kyds16+kyds18+kyds19+kyds20+kyds21+kyds24+kyds25+kyds28 as kjdb_score,
+acctPast3mTransactionCount, acctPast3mTransactionAmnt
 from usfinance.aml_kyds_20210808
 )
 order by kjdb_score  
@@ -582,7 +587,8 @@ withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
 select("acct_no","id_card","name","credit_no","kjdb_score","kyds2","kyds3","kyds4","kyds5",
 "kyds6","kyds7","kyds8","kyds9","kyds10","kyds11","kyds12","kyds16",
 "kyds18","kyds19","kyds20","kyds21","kyds24","kyds25","kyds28", 
-"acctTransactionAmnt", "acctTransactionCount","timeRange").
+"acctPast3mTransactionAmnt", "acctPast3mTransactionCount").
+withColumn("timeRange", lit("20210522-20210822")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kjdb_cases")
 
 
@@ -592,7 +598,8 @@ select distinct * from
 (
   select *,
   kyds4+kyds5+kyds6+kyds7+kyds8+kyds9+
-kyds10+kyds22+kyds23+kyds26+kyds27+kyds29+kyds30 as dxqz_score
+kyds10+kyds22+kyds23+kyds26+kyds27+kyds29+kyds30 as dxqz_score,
+acctPast3mTransactionCount, acctPast3mTransactionAmnt
 from usfinance.aml_kyds_20210808
 )
 order by dxqz_score desc
@@ -607,11 +614,9 @@ withColumn("id_card",concat(lit("身份证"),$"id_card")).
 withColumn("credit_no",concat(lit("信用号"),$"credit_no")).
 select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds6","kyds7",
 "kyds8","kyds9","kyds10","kyds22","kyds23", "kyds26", "kyds27","kyds29","kyds30",
-"acctTransactionAmnt", "acctTransactionCount","timeRange").
+"acctPast3mTransactionAmnt", "acctPast3mTransactionCount").
+withColumn("timeRange", lit("20210522-20210822")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
-
-
-
 
 
 
