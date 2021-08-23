@@ -361,7 +361,7 @@ join(ip_location, mf_ip.col("ip1") === ip_location.col("start_ip1") &&
 mf_ip.col("ip2") === ip_location.col("start_ip2") &&
 mf_ip.col("ip3") >= ip_location.col("start_ip3") &&
 mf_ip.col("ip3") <= ip_location.col("end_ip3")).
-filter($"ip_country".contains("菲律宾") || $"ip_country".contains("韩国") || $"ip_country".contains("澳门") || $"ip_country".contains("日本") || $"ip_country".contains("香港") || $"ip_country".contains("泰国") || $"ip_country".contains("缅甸") || $"ip_country".contains("新加坡")).
+filter($"ip_country".contains("菲律宾") || $"ip_country".contains("韩国") || $"ip_country".contains("澳门") || $"ip_country".contains("日本") || $"ip_country".contains("香港") || $"ip_country".contains("泰国") || $"ip_country".contains("缅甸") || $"ip_country".contains("新加坡") || $"ip_country".contains("美国")).
 select("acct_no","stat_date").distinct().
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_foreign_ip")
 spark.sql("select *,1.0 as abnormalPlaceIP from usfinance.aml_kyds_foreign_ip").join(
