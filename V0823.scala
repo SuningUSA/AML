@@ -618,7 +618,8 @@ select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds
 withColumn("timeRange", lit("20210522-20210822")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
 
-
-
+spark.table("usfinance.aml_kyds_dxqz_cases").
+groupBy("dxqz_score").agg(countDistinct($"acct_no").as("AA")).
+orderBy($"AA".desc).show(false)
 
 
