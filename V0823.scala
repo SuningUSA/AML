@@ -593,6 +593,7 @@ write.mode("overwrite").saveAsTable("usfinance.aml_kyds_kjdb_cases")
 
 
 //地下钱庄Heqiao-0812
+spark.sql("""drop table if exists usfinance.aml_kyds_dxqz_cases""")
 spark.sql("""
 select distinct * from 
 (
@@ -603,7 +604,6 @@ acctPast3mTransactionCount, acctPast3mTransactionAmnt
 from usfinance.aml_kyds_20210808
 )
 order by dxqz_score desc
-limit 20
 """).join(
 spark.sql("select acct_no, id_card,name,user_type from finance.mls_member_info_all").dropDuplicates("acct_no"),Seq("acct_no")).
 join(
@@ -618,8 +618,5 @@ select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds
 withColumn("timeRange", lit("20210522-20210822")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
 
-spark.table("usfinance.aml_kyds_dxqz_cases").
-groupBy("dxqz_score").agg(countDistinct($"acct_no").as("AA")).
-orderBy($"AA".desc).show(false)
 
 
