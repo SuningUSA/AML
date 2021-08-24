@@ -2,7 +2,6 @@
 //spark-shell --master yarn --executor-memory 16g --num-executors 30 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
 //
 //反洗钱规则打捞分析
-
 import org.apache.spark.sql.types.{StringType, DoubleType, IntegerType, LongType}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.rand
@@ -617,6 +616,10 @@ select("acct_no","id_card","name","credit_no","dxqz_score","kyds4","kyds5","kyds
 "acctPast3mTransactionAmnt", "acctPast3mTransactionCount").
 withColumn("timeRange", lit("20210522-20210822")).
 write.mode("overwrite").saveAsTable("usfinance.aml_kyds_dxqz_cases")
+
+
+
+
 
 
 
