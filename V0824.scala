@@ -1,5 +1,5 @@
 //source change_spark_version spark-2.3.3.2
-//spark-shell --master yarn --executor-memory 16g --num-executors 30 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
+//spark-shell --master yarn --executor-memory 16g --num-executors 40 --executor-cores 4 --driver-memory 16g --conf spark.ui.port=$[$RANDOM%1000 + 8000] --conf spark.driver.extraJavaOptions="-Dscala.color"  --conf spark.dynamicAllocation.enabled=false --conf spark.sql.crossJoin.enabled=true --conf spark.sql.broadcastTimeout=360000  --jars Heqiao_Ruan/anti-money-launder-address-standardize-1.0.0.jar  
 //
 //反洗钱规则打捞分析
 
@@ -315,7 +315,6 @@ A = A.join(B,Seq("acct_no"),"left").withColumn("kyds18",
 when(($"cross_cnt_ratio">0.5 && $"cross_cnt_ratio".isNotNull) || ($"cross_amt_ratio">0.7 && $"cross_amt_ratio".isNotNull),15.0).
 otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_18")
-
 
 //kyds20:折RMB整数跨境转入
 //贷方交易中存在境外转入交易金额折RMB为整数如5000，10000等，且笔数超过5笔或金额大于30000
