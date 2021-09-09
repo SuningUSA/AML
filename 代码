@@ -384,7 +384,7 @@ var B = spark.table("usfinance.aml_kyds_withOMS2").filter($"bill_tp_cd"==="1").j
 A = A.join(B,Seq("acct_no"),"left").withColumn("kyds22",when($"kyds22".isNotNull,$"kyds22").otherwise(0.0))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_22")
 
-//kyds23:借方交易对公交易对手过渡资金
+//kyds23:借方交易对公交易对手过渡资金 ---- 0908 modification
 //借方交易对公交易对手资金快进快出，当日清零
 //这里理解快进快出是（进+出）> 平均余额的10倍，且进出绝对差值小于平均余额的1%
 var A = spark.sql("select distinct acct_no from usfinance.aml_kyds_mainTB_withliushui")
