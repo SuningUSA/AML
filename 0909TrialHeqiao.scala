@@ -37,3 +37,13 @@ using (id_card)
 where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DATE(),180)
 --只看半年以内的
 """)
+val key_S019_BICDT_TPQR_PIM_PB01A_ED:String = getKey("JMX2011124IxilE","-1")
+val decryptUdf_S019_BICDT_TPQR_PIM_PB01A_ED: UserDefinedFunction = udf((input: String) => {
+if (input == null) null
+else SM4Utils.decryptData_CBC(input, key_S019_BICDT_TPQR_PIM_PB01A_ED)
+})
+val key_S019_BICDT_TPQR_PIM_PB01A_ED:String = getKey("JMX2011124IxilE","-1")
+val decryptUdf_S019_BICDT_TPQR_PIM_PB01A_ED: UserDefinedFunction = udf((input: String) => {
+if (input == null) null
+else SM4Utils.decryptData_CBC(input, key_S019_BICDT_TPQR_PIM_PB01A_ED)
+})
