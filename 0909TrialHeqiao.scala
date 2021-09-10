@@ -17,12 +17,35 @@ val current_date = cur_dat.minusDays(2).toString
 val past3d = cur_dat.minusDays(3).toString
 val past3dStatDate = past3d.substring(0, 4) + past3d.substring(5, 7) + past3d.substring(8, 10)
 
-
+spark.sql("""
+create table usfinance.aml_kyds_mainTB as
+select acct_no,id_card,user_age,rgst_time,member_id,mbl,adrs,user_type,if_unemploy
+from (select * from finance.mls_member_info_all where length(id_card) = 18)
+left join 
+(
+select id_num as id_card,1.0 as if_unemploy
+from fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model
+where length(id_num) = 18 and pb01ad04 = '70'
+)
+using (id_card)
+where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DATE(),180)
+--只看半年以内的
+""")
 //主表落库+是否失业信息+年龄
 //fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
 spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
 
 spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
+
 spark.sql("""
 create table usfinance.aml_kyds_mainTB as
 select acct_no,id_card,user_age,rgst_time,member_id,mbl,adrs,user_type,if_unemploy
