@@ -40,6 +40,7 @@ where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DAT
 
 //更新逻辑: 解密
 <<<<<<< rhq0909_2
+=======
 //主表落库+是否失业信息+年龄
 //解密函数:
 val key_S019_BICDT_TPQR_PIM_PB01A_ED:String = getKey("JMX2011124IxilE","-1")
@@ -68,7 +69,6 @@ using (id_card)
 where user_age is not null and user_age > 0 and rgst_time > DATE_SUB(CURRENT_DATE(),180)
 --只看半年以内的
 """)
-=======
 >>>>>>> master
 
 //关联流水表
@@ -142,7 +142,6 @@ select acct_no, user_type, rgst_time from finance.mls_member_info_all where leng
 select("acct_no").distinct.withColumn("kyds1", lit(10.0))
 A = A.join(B, Seq("acct_no"), "left").withColumn("kyds1", when($"kyds1".isNull, 0.0).otherwise($"kyds1"))
 A.write.mode("overwrite").saveAsTable("usfinance.aml_kyds_1")
-=======
 >>>>>>> master
 //KYDS-2:客户高低龄:客户年龄是否大于60岁或小于21岁
 
