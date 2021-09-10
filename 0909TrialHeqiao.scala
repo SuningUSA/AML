@@ -22,6 +22,9 @@ val past3dStatDate = past3d.substring(0, 4) + past3d.substring(5, 7) + past3d.su
 //fbicsi.T_BICDT_TPQR_PIM_PB01A_D_model 人行征信，表源后续存在停更可能，需申请fdm_dpa权限
 spark.sql("drop table if exists usfinance.peng_20210805_aml_kyds_mainTB")
 
+
+spark.table("usfinance.peng_20210805_aml_kyds_mainTB")
+
 spark.sql("drop table if exists usfinance.aml_kyds_mainTB")
 spark.sql("""
 create table usfinance.aml_kyds_mainTB as
